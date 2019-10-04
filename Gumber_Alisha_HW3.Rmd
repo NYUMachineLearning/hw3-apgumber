@@ -1,0 +1,225 @@
+---
+title: "Homework 3"
+author: "Alisha Gumber"
+date: "10/3/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(caret)
+library(ROCR)
+library(pROC)
+library(MASS)
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+library(ggfortify)
+library(glmnet)
+library(tidyverse)
+```
+
+
+# Homework Part 1
+
+## Lasso
+
+$$Lasso Regression=\sum_{i=1}^{n}(y_i - w_0 - \sum_{j=1}^{p}w_jx_{ij})^2 + \lambda\sum_{j=1}^p|w_j|$$
+2. Create and train model 
+```{r}
+# split data
+train_size <- floor(0.75 * nrow(airquality))
+set.seed(543)
+train_pos <- sample(seq_len(nrow(airquality)), size = train_size)
+train_regression <- airquality[train_pos,-c(1,2)]
+test_regression <- airquality[-train_pos,-c(1,2)]
+
+dim(train_regression)
+dim(test_regression)
+
+# lasso regression
+control =  trainControl(method = "boot", 15)
+
+lasso_regression <- train(Temp ~ Wind + Month, data = train_regression,
+                          method = 'lasso', trControl= control) 
+lasso_regression
+```
+
+
+Examine the residuals 
+```{r}
+lasso_test_pred <- predict(lasso_regression, newdata = test_regression)
+
+#plot the predicted values vs the observed values
+plot_lasso_test_pred <- data.frame(Temp_test_pred_lasso = lasso_test_pred, 
+                                   Observed_Temp_lasso = test_regression$Temp)
+ggplot(data = plot_lasso_test_pred) +
+  geom_point(aes(x=Observed_Temp_lasso, y = Temp_test_pred_lasso)) + 
+  ggtitle("True Temp Value vs Predicted Temp Value Lasso Regression") +
+  theme_bw()
+
+#median residual value should be close to zero
+median(resid(lasso_regression))
+
+# The median residual is lower (closer to zero) for lasso regression. 0.07194436 for lasso compared to 0.2348498 for ridge regression. 
+```
+
+
+# Homework Part 2:
+
+1. Use the Breast Cancer dataset from the mlbench package, and predict whether the cancer is malignant or benign using one of the algorithms we learned about in class. Give some rationale as to why you chose this algorithm. Plot ROC curves, and confusion matrices. If you are choosing a hyperparameter like K or lambda, explain how and why you chose it. 
+
+## Clean the Breast Cancer data set
+```{r}
+# import mlbench package
+library(mlbench)
+
+# get Breast Cancer data
+data("BreastCancer") 
+str(BreastCancer)
+
+# look for missing data using is.na() function and omit missing data
+new_bc <- na.omit(BreastCancer)
+str(new_bc) 
+
+# Save Id column as 'drop' and drop it from data frame
+drop <- c("Id")
+bc_data = new_bc[,!(names(new_bc) %in% drop)]
+```
+
+Rows with incomplete data (NA's) have been omitted (699 observations --> 683)
+
+
+```{r}
+# convert the data to numeric because they are factors right now, except Class column
+bc_data[1:9] <- lapply(bc_data, function(x) as.numeric(as.character(x)))
+sum(is.na(bc_data))
+```
+
+## Predict whether the cancer is Malignant or Benign:
+
+Predicting if cancer is malignant or benign is a binary classification. Good models for this type of classification that we have learned about so far are linear discriminant analysis (LDA) and logisitc regression. I will see if either of these models work well for this data.
+
+```{r}
+# See if data fits assumptions of LDA for any variables:
+
+thickness <- ggplot(data = bc_data, aes(x = Cl.thickness, fill = Class)) + 
+  geom_histogram(position="identity", alpha=0.5, bins= 25)  +
+  theme_bw()
+size <- ggplot(data = bc_data, aes(x = Cell.size, fill = Class)) + 
+  geom_histogram(position="identity", alpha=0.5, bins= 25) +
+  theme_bw()
+shape <- ggplot(data = bc_data, aes(x = Cell.shape, fill = Class)) + 
+  geom_histogram(position="identity", alpha=0.5, bins= 25) +
+  theme_bw()
+adhesion <- ggplot(data = bc_data, aes(x = Marg.adhesion, fill = Class)) + 
+  geom_histogram(position="identity", alpha=0.5, bins= 25) +
+  theme_bw()
+epith_size <- ggplot(data = bc_data, aes(x = Epith.c.size, fill = Class)) + 
+  geom_histogram(position="identity", alpha=0.5, bins= 25) +
+  theme_bw()
+bare_nuclei <- ggplot(data = bc_data, aes(x = Bare.nuclei, fill = Class)) + 
+  geom_histogram(position="identity", alpha=0.5, bins= 25) +
+  theme_bw()
+cromatin <- ggplot(data = bc_data, aes(x = Bl.cromatin, fill = Class)) + 
+  geom_histogram(position="identity", alpha=0.5, bins= 25) +
+  theme_bw()
+normal_nucleoli <- ggplot(data = bc_data, aes(x = Normal.nucleoli, fill = Class)) + 
+  geom_histogram(position="identity", alpha=0.5, bins= 25) +
+  theme_bw()
+mitoses <- ggplot(data = bc_data, aes(x = Mitoses, fill = Class)) + 
+  geom_histogram(position="identity", alpha=0.5, bins= 25) +
+  theme_bw()
+
+grid.arrange(thickness, size, shape, adhesion, epith_size, bare_nuclei, cromatin, normal_nucleoli, mitoses)
+
+```
+
+**There doesn't seem to be a normal distribution of variables and there are only two response types (malignant or benign) for this data, so LDA would not be the best model for this data set.**
+
+## Feature Selection:
+
+
+Since the assumptions for LDA do not fit this data set, I'm going to look at the correlations between the variables to see if I can perform Logistic Regression.
+Some important things to remember for feature selection: 1) Drop features with a lot of missing data. 2) If two features are highly correlated, can drop one feature. 3) Choose features with a lot of variance.
+
+```{r}
+# Perform pairwise correlation test to see if any features are highly correlated. If two features are highly correlated, I can drop one.
+cor(bc_data[1:9], use="pairwise.complete.obs", method="kendall")
+
+# It looks like there's a pretty high correlation between cell size and cell shape (0.818), so I will drop one of these variables in my predictive model (cell shape).
+```
+
+
+```{r}
+# split into training and testing data (70/30 split)
+training <- floor(0.70 * nrow(bc_data))
+set.seed(500)
+train_pos <- sample(seq_len(nrow(bc_data)), size = training)
+train_data <- bc_data[train_pos,]
+test_data <- bc_data[-train_pos,]
+
+dim(train_data)
+dim(test_data)
+
+```
+
+
+```{r}
+train_data_log <- train_data[c(which(train_data$Class == "benign"),
+                                           which(train_data$Class == "malignant")),]
+test_data_log <- test_data[c(which(test_data$Class == "benign"), 
+                                         which(test_data$Class == "malignant")),]
+
+train_data_log$Class <- factor(train_data_log$Class)
+test_data_log$Class <- factor(test_data_log$Class)
+
+```
+
+## Model with Logistic Regression and repeated cross validation:
+
+```{r}
+# logistic regression to predict class (malignant or benign) using all variables as predictors, except cell shape due to the high correlation between cell size and cell shape.
+# control with repeated cross validation with 10 repeats.
+
+control <- trainControl(method = "repeatedcv", repeats = 10, classProbs = T,
+                     savePredictions = T)
+  
+logistic_reg <- train(Class ~ Cl.thickness + Cell.size + Marg.adhesion + Epith.c.size + Bare.nuclei + Bl.cromatin + Normal.nucleoli + Mitoses, method="glm", data=train_data_log, family="binomial", trControl=control)
+
+```
+
+```{r} 
+logistic_reg
+summary(logistic_reg)
+```
+
+```{r}
+# predict on testing data
+log_reg_predict <- predict(logistic_reg, newdata=test_data_log)
+
+#confusion matrix, make positive response malignant.
+confusionMatrix(log_reg_predict, reference = test_data_log$Class, positive = "malignant")
+```
+
+
+```{r}
+# plot ROC curve: shows Area Under Curve (AUC) as 99.24%
+plot(x = roc(predictor = logistic_reg$pred$malignant,
+             response = logistic_reg$pred$obs)$specificities, 
+     y = roc(predictor = logistic_reg$pred$malignant, 
+             response = logistic_reg$pred$obs)$sensitivities,
+     col= "blue", xlim = c(1, 0), type ="l", ylab = "Sensitivity",
+     xlab = "Specificity")
+legend("bottomright", legend = paste("Malignant v Benign --", 
+                                     roc(predictor = logistic_reg$pred$malignant,
+                                         response = logistic_reg$pred$obs)$auc
+, sep = ""), col = c("blue"), fill = c("blue"))
+```
+
+
+
+
